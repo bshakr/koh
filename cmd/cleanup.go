@@ -125,6 +125,11 @@ func runCleanup(_ *cobra.Command, args []string) error {
 		} else {
 			fmt.Println("Worktree removed successfully")
 		}
+
+		// Clean up any remaining directory (git worktree remove may leave empty dirs)
+		if err := os.RemoveAll(worktreePath); err != nil {
+			fmt.Printf("Warning: Failed to remove worktree directory: %v\n", err)
+		}
 	}
 
 	// Step 3: Close tmux window (tmux will automatically switch to previous window)
