@@ -11,7 +11,7 @@ import (
 // Version is the current version of koh
 // This can be overridden at build time using ldflags:
 // go build -ldflags="-X github.com/bshakr/koh/cmd.Version=v1.0.0"
-var Version = "0.1.0"
+var Version = "0.1.8"
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
