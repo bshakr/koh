@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -33,6 +32,7 @@ type worktreeItem struct {
 	branch    string
 	path      string
 	isCurrent bool
+	reasons   []git.PruneReason
 }
 
 // listModel is the bubbletea model for the interactive worktree list
@@ -76,35 +76,40 @@ func runList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to check .koh directory: %w", err)
 	}
 
-	// List git worktrees
+	// List git worktrees via porcelain so we can also surface prune reasons.
 	ctx := context.Background()
-	gitCmd := exec.CommandContext(ctx, "git", "worktree", "list")
-	output, err := gitCmd.Output()
+	rawWorktrees, err := git.ListWorktreesPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
-	lines := strings.Split(string(output), "\n")
+	classified, err := git.ClassifyWorktrees(ctx, rawWorktrees)
+	if err != nil {
+		// Fall back to unclassified data — reason tags will be empty but the list still works.
+		classified = rawWorktrees
+	}
+
 	var worktrees []worktreeItem
-
-	for _, line := range lines {
-		if strings.Contains(line, "/.koh/") {
-			// Extract worktree name and branch
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				path := parts[0]
-				branch := strings.Trim(parts[len(parts)-1], "[]")
-				name := filepath.Base(path)
-				isCurrent := currentWorktreePath != "" && path == currentWorktreePath
-
-				worktrees = append(worktrees, worktreeItem{
-					name:      name,
-					branch:    branch,
-					path:      path,
-					isCurrent: isCurrent,
-				})
+	for _, wt := range classified {
+		if !strings.Contains(wt.Path, "/.koh/") {
+			continue
+		}
+		isCurrent := currentWorktreePath != "" && wt.Path == currentWorktreePath
+		branch := wt.Branch
+		if branch == "" {
+			if wt.Detached {
+				branch = "(detached)"
+			} else {
+				branch = "(unknown)"
 			}
 		}
+		worktrees = append(worktrees, worktreeItem{
+			name:      filepath.Base(wt.Path),
+			branch:    branch,
+			path:      wt.Path,
+			isCurrent: isCurrent,
+			reasons:   wt.Reasons,
+		})
 	}
 
 	if len(worktrees) == 0 {
@@ -224,6 +229,7 @@ func (m listModel) View() string {
 		}
 
 		var line string
+		reasonTag := renderReasons(wt.reasons)
 		if wt.isCurrent {
 			// Current session in green text (no background)
 			greenStyle := lipgloss.NewStyle().
@@ -234,13 +240,14 @@ func (m listModel) View() string {
 			nameStyled := greenStyle.Render(wt.name)
 			branchStyled := greenStyle.Render(styles.IconBranch + " " + wt.branch)
 			currentLabel := styles.Muted.Render("[current]")
-			line = fmt.Sprintf("%s%s %s %s %s", cursor, icon, nameStyled, branchStyled, currentLabel)
+			line = fmt.Sprintf("%s%s %s %s %s %s", cursor, icon, nameStyled, branchStyled, currentLabel, reasonTag)
 		} else {
 			icon := styles.Muted.Render(styles.IconBullet)
 			nameStyled := wt.name
 			branchStyled := styles.Muted.Render(styles.IconBranch + " " + wt.branch)
-			line = fmt.Sprintf("%s%s %s %s", cursor, icon, nameStyled, branchStyled)
+			line = fmt.Sprintf("%s%s %s %s %s", cursor, icon, nameStyled, branchStyled, reasonTag)
 		}
+		line = strings.TrimRight(line, " ")
 
 		s.WriteString(line + "\n")
 	}

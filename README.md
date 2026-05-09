@@ -23,6 +23,18 @@ Cleans up after you're done:
 1. Closes the tmux window for the worktree
 2. Removes the git worktree from `.koh/<worktree-name>`
 
+### `koh prune`
+
+Removes worktrees that are safe to clean up in bulk. A worktree is considered prunable when one or more of these apply:
+
+- **`merged`** — the branch is fully merged into the default branch
+- **`gone-from-remote`** — the upstream was deleted (covers squash-merged PRs)
+- **`gone`** — the worktree directory has been removed on disk
+
+`koh list` displays the same labels next to each worktree so you can see why something would be pruned.
+
+By default `koh prune` opens an interactive picker with prunable worktrees pre-checked. The current worktree is never selectable.
+
 ## Prerequisites
 
 - [git](https://git-scm.com/)
@@ -101,11 +113,35 @@ This will:
 
 **Note:** Make sure you've pushed or merged your changes before running cleanup!
 
+### Pruning many worktrees at once
+
+After a long-running project, `.koh/` accumulates worktrees whose work has already been merged. `koh prune` clears them out without you naming each one:
+
+```bash
+koh prune              # interactive picker (prunable worktrees pre-checked)
+koh prune --dry-run    # preview what would be pruned, change nothing
+koh prune --yes        # skip the picker, prune everything classified as prunable
+```
+
+Useful flags:
+
+- `--delete-branch` — also delete the local branch for each pruned worktree
+- `--no-fetch` — skip the implicit `git fetch --prune` (use offline)
+
+In the interactive picker:
+
+- `space` — toggle the highlighted worktree
+- `a` / `n` — select all / none
+- `d` — toggle "also delete local branch" for this run
+- `enter` — prune the selected worktrees
+- `q` — cancel without changes
+
 ## Commands
 
 ```bash
 koh new <worktree-name>      # Create a new worktree and tmux session
 koh cleanup <worktree-name>  # Close tmux session and remove worktree
+koh prune                    # Bulk-remove merged or stale worktrees
 koh list                     # List all koh worktrees
 koh init                     # Interactive configuration setup
 koh config                   # View current configuration
