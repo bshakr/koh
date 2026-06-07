@@ -235,14 +235,20 @@ func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch
 			}
 		}
 
-		if err := git.RemoveWorktreeWithContext(ctx, c.wt.Path); err != nil {
-			fmt.Printf("  %s %v\n", styles.ErrorMessage.Render(styles.IconCross), err)
-			failed++
-			continue
-		}
-		// git worktree remove can leave the directory behind — match cleanup.go.
-		if err := os.RemoveAll(c.wt.Path); err != nil {
-			fmt.Printf("  %s remove dir: %v\n", styles.Muted.Render("warn"), err)
+		if c.wt.HasReason(git.ReasonGone) {
+			// Directory already missing on disk — the trailing PruneRefs
+			// call will drop the stale gitdir reference. Calling
+			// "git worktree remove" here would just error out.
+		} else {
+			if err := git.RemoveWorktreeWithContext(ctx, c.wt.Path); err != nil {
+				fmt.Printf("  %s %v\n", styles.ErrorMessage.Render(styles.IconCross), err)
+				failed++
+				continue
+			}
+			// git worktree remove can leave the directory behind — match cleanup.go.
+			if err := os.RemoveAll(c.wt.Path); err != nil {
+				fmt.Printf("  %s remove dir: %v\n", styles.Muted.Render("warn"), err)
+			}
 		}
 
 		if deleteBranch && c.wt.Branch != "" {

@@ -184,6 +184,19 @@ func TestPruneModelQuitCancels(t *testing.T) {
 	}
 }
 
+func TestGoneReasonShortCircuit(t *testing.T) {
+	// A candidate flagged ReasonGone should report HasReason(ReasonGone)
+	// so executePrune skips the "git worktree remove" call. Regression
+	// guard for the case where the dir is already missing.
+	c := makeCandidate("orphan", "old-branch", []git.PruneReason{git.ReasonGone}, false)
+	if !c.wt.HasReason(git.ReasonGone) {
+		t.Fatal("expected HasReason(ReasonGone) = true")
+	}
+	if !c.wt.IsPrunable() {
+		t.Error("expected IsPrunable = true for gone candidate")
+	}
+}
+
 func TestPruneModelNavigationBounds(t *testing.T) {
 	m := pruneModel{
 		candidates: []pruneCandidate{
