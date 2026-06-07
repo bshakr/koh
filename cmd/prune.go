@@ -125,7 +125,8 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	return executePrune(ctx, toPrune, deleteBranch)
+	executePrune(ctx, toPrune, deleteBranch)
+	return nil
 }
 
 // loadPruneCandidates lists worktrees, classifies them, and converts each
@@ -215,7 +216,7 @@ func printDryRun(candidates []pruneCandidate) {
 // executePrune removes the chosen worktrees, closes their tmux windows, and
 // optionally deletes their branches. Failures on a single worktree are
 // reported but do not stop the loop.
-func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch bool) error {
+func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch bool) {
 	inTmux := tmux.IsInTmux()
 	repoName, _ := git.GetRepoName()
 
@@ -266,7 +267,6 @@ func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch
 	}
 	fmt.Println()
 	fmt.Println(styles.SuccessMessage.Render(styles.IconCheck + " " + summary))
-	return nil
 }
 
 func displayBranch(wt git.WorktreeInfo) string {

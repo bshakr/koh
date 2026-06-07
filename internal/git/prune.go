@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"slices"
@@ -163,7 +164,8 @@ func IsMerged(ctx context.Context, branch, base string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		// Exit 1 means "not an ancestor" — that's a clean negative answer.
 		return false, nil
 	}
