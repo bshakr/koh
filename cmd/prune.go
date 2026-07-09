@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/bshakr/koh/internal/git"
@@ -33,9 +34,13 @@ A worktree is considered prunable when one or more of these apply:
   • merged           — its branch is fully merged into the default branch
   • gone-from-remote — its tracked upstream branch was deleted (e.g. after squash-merge)
 
+The current worktree is never pruned, and worktrees with uncommitted changes
+are skipped (use 'koh cleanup <name>' to remove those explicitly).
+
 By default an interactive picker lets you confirm what gets removed. Use
 --yes to skip the picker and remove everything classified as prunable, or
 --dry-run to preview without changing anything.`,
+	Args: cobra.NoArgs,
 	RunE: runPrune,
 }
 
@@ -56,6 +61,12 @@ type pruneCandidate struct {
 }
 
 func runPrune(_ *cobra.Command, _ []string) error {
+	// Windows is not supported due to differences in process management
+	// (same guard as the cleanup command, which does the same teardown).
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("prune command is not supported on Windows")
+	}
+
 	if !git.IsGitRepo() {
 		return fmt.Errorf("not in a git repository")
 	}
@@ -63,16 +74,26 @@ func runPrune(_ *cobra.Command, _ []string) error {
 	ctx, cleanupSignals := signals.SetupCancellableContext()
 	defer cleanupSignals()
 
-	mainRepoRoot, err := git.GetMainRepoRootOrCwd()
+	// Resolve via git-common-dir (not cwd) so prune works from any
+	// subdirectory of the main repo, not just its root.
+	mainRepoRoot, err := git.GetMainRepoRoot()
 	if err != nil {
 		return fmt.Errorf("failed to get repository root: %w", err)
 	}
 	kohDir := filepath.Join(mainRepoRoot, ".koh")
-	if _, err := os.Stat(kohDir); os.IsNotExist(err) {
-		fmt.Println(styles.Muted.Render("No worktrees found (no .koh directory)"))
+
+	// Cheap local listing first — skip the network fetch entirely when no
+	// koh worktrees are registered at all. Deliberately no .koh stat check:
+	// worktrees whose directories are gone (even a deleted .koh) still need
+	// their administrative refs pruned.
+	worktrees, err := git.ListWorktreesPorcelain(ctx)
+	if err != nil {
+		return err
+	}
+	kohWorktrees := filterKohWorktrees(worktrees, kohDir)
+	if len(kohWorktrees) == 0 {
+		fmt.Println(styles.SuccessMessage.Render(styles.IconCheck + " Nothing to prune"))
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to check .koh directory: %w", err)
 	}
 
 	if !pruneNoFetch {
@@ -82,7 +103,7 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	candidates, err := loadPruneCandidates(ctx, kohDir)
+	candidates, err := buildPruneCandidates(ctx, kohWorktrees)
 	if err != nil {
 		return err
 	}
@@ -98,46 +119,50 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	var (
-		toPrune       []pruneCandidate
-		deleteBranch  = pruneDeleteBranch
-		runtimeCancel bool
-	)
+	toPrune := prunable
+	deleteBranch := pruneDeleteBranch
 
-	if pruneAssumeYes {
-		toPrune = prunable
-	} else {
-		selected, dbToggle, cancel, err := runPruneTUI(candidates, pruneDeleteBranch)
+	if !pruneAssumeYes {
+		selected, dbToggle, cancelled, err := runPruneTUI(ctx, candidates, pruneDeleteBranch)
 		if err != nil {
 			return fmt.Errorf("error running prune picker: %w", err)
 		}
-		runtimeCancel = cancel
+		if cancelled {
+			fmt.Println(styles.Muted.Render("Prune cancelled"))
+			return nil
+		}
 		toPrune = selected
 		deleteBranch = dbToggle
 	}
 
-	if runtimeCancel {
-		fmt.Println(styles.Muted.Render("Prune cancelled"))
-		return nil
-	}
 	if len(toPrune) == 0 {
 		fmt.Println(styles.Muted.Render("Nothing selected"))
 		return nil
 	}
 
-	executePrune(ctx, toPrune, deleteBranch)
-	return nil
+	return executePrune(ctx, toPrune, deleteBranch)
 }
 
-// loadPruneCandidates lists worktrees, classifies them, and converts each
-// into a pruneCandidate. Worktrees outside the .koh directory (the main
-// repo, manual worktrees) are filtered out so we never touch them.
-func loadPruneCandidates(ctx context.Context, kohDir string) ([]pruneCandidate, error) {
-	worktrees, err := git.ListWorktreesPorcelain(ctx)
-	if err != nil {
-		return nil, err
+// filterKohWorktrees keeps only worktrees living inside this repo's .koh
+// directory, so koh never touches the main repo or manual worktrees. Both
+// list and prune use this same predicate so they agree on what a koh
+// worktree is. Worktrees under the pre-rename .ko directory are included so
+// they stay visible to cleanup and prune.
+func filterKohWorktrees(worktrees []git.WorktreeInfo, kohDir string) []git.WorktreeInfo {
+	legacyDir := filepath.Join(filepath.Dir(kohDir), ".ko")
+	var out []git.WorktreeInfo
+	for _, wt := range worktrees {
+		if pathInside(wt.Path, kohDir) || pathInside(wt.Path, legacyDir) {
+			out = append(out, wt)
+		}
 	}
+	return out
+}
 
+// buildPruneCandidates classifies the given koh worktrees and converts each
+// into a pruneCandidate. The current worktree is flagged (and never
+// pre-selected) so no consumer — picker, --yes, or --dry-run — prunes it.
+func buildPruneCandidates(ctx context.Context, worktrees []git.WorktreeInfo) ([]pruneCandidate, error) {
 	classified, err := git.ClassifyWorktrees(ctx, worktrees)
 	if err != nil {
 		return nil, err
@@ -145,55 +170,68 @@ func loadPruneCandidates(ctx context.Context, kohDir string) ([]pruneCandidate, 
 
 	var currentPath string
 	if git.IsInWorktree() {
-		currentPath, _ = git.GetCurrentWorktreePath()
-	}
-
-	absKoh, err := filepath.Abs(kohDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve .koh path: %w", err)
-	}
-
-	var out []pruneCandidate
-	for _, wt := range classified {
-		if !pathInside(wt.Path, absKoh) {
-			continue
+		currentPath, err = git.GetCurrentWorktreePath()
+		if err != nil {
+			// The current-worktree guard depends on this path; without it we
+			// could offer the user's own worktree for deletion.
+			return nil, fmt.Errorf("failed to resolve current worktree path: %w", err)
 		}
+	}
+
+	out := make([]pruneCandidate, 0, len(classified))
+	for _, wt := range classified {
+		isCurrent := currentPath != "" && samePath(wt.Path, currentPath)
 		out = append(out, pruneCandidate{
 			wt:        wt,
 			name:      filepath.Base(wt.Path),
-			selected:  wt.IsPrunable(),
-			isCurrent: currentPath != "" && samePath(wt.Path, currentPath),
+			selected:  wt.IsPrunable() && !isCurrent,
+			isCurrent: isCurrent,
 		})
 	}
 	return out, nil
 }
 
-// pathInside reports whether child is the same as parent or nested below it.
-func pathInside(child, parent string) bool {
-	abs, err := filepath.Abs(child)
+// canonicalPath resolves symlinks and absolutizes a path so paths reported
+// by different git commands (porcelain list vs rev-parse) compare equal even
+// when one goes through a symlink (e.g. /tmp vs /private/tmp on macOS).
+func canonicalPath(p string) string {
+	abs, err := filepath.Abs(p)
 	if err != nil {
-		return false
+		return p
 	}
-	rel, err := filepath.Rel(parent, abs)
-	if err != nil {
-		return false
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
 	}
-	return !strings.HasPrefix(rel, "..") && rel != ".."
+	// The path itself may not exist (gone worktrees) — resolve its parent.
+	if resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(resolvedDir, filepath.Base(abs))
+	}
+	return abs
 }
 
 func samePath(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
-	if errA != nil || errB != nil {
+	return canonicalPath(a) == canonicalPath(b)
+}
+
+// pathInside reports whether child is the same as parent or nested below it.
+func pathInside(child, parent string) bool {
+	rel, err := filepath.Rel(canonicalPath(parent), canonicalPath(child))
+	if err != nil {
 		return false
 	}
-	return absA == absB
+	if rel == "." {
+		return true
+	}
+	// A bare ".." prefix would also exclude legitimate names like "..archive".
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func filterPrunable(candidates []pruneCandidate) []pruneCandidate {
 	var out []pruneCandidate
 	for _, c := range candidates {
-		if c.wt.IsPrunable() {
+		// isCurrent is excluded here — not just in the picker — so --yes and
+		// --dry-run honor the "current worktree is never pruned" invariant.
+		if c.wt.IsPrunable() && !c.isCurrent {
 			out = append(out, c)
 		}
 	}
@@ -215,31 +253,50 @@ func printDryRun(candidates []pruneCandidate) {
 
 // executePrune removes the chosen worktrees, closes their tmux windows, and
 // optionally deletes their branches. Failures on a single worktree are
-// reported but do not stop the loop.
-func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch bool) {
+// reported but do not stop the loop; an error is returned when any worktree
+// failed so the process exits non-zero.
+func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch bool) error {
 	inTmux := tmux.IsInTmux()
-	repoName, _ := git.GetRepoName()
 
-	var pruned, failed int
+	var pruned, skipped, failed int
+	var sawGone bool
+	var branches []string
 
 	for _, c := range candidates {
-		fmt.Printf("%s %s\n", styles.Active.Render(styles.IconArrow), c.name)
-
-		if inTmux && repoName != "" {
-			windowName := fmt.Sprintf("%s|%s", repoName, c.name)
-			if err := tmux.CloseWindow(windowName, c.name); err != nil {
-				// Missing window is the common case (tmux already closed) — only log unexpected errors.
-				if !strings.Contains(err.Error(), "no tmux window found") {
-					fmt.Printf("  %s tmux: %v\n", styles.Muted.Render("warn"), err)
-				}
-			}
+		if ctx.Err() != nil {
+			fmt.Println(styles.Muted.Render("Stopping: operation cancelled"))
+			break
 		}
 
+		fmt.Printf("%s %s\n", styles.Active.Render(styles.IconArrow), c.name)
+
 		if c.wt.HasReason(git.ReasonGone) {
-			// Directory already missing on disk — the trailing PruneRefs
-			// call will drop the stale gitdir reference. Calling
-			// "git worktree remove" here would just error out.
+			// Directory already missing on disk — the PruneRefs call below
+			// drops the stale gitdir reference. Calling "git worktree remove"
+			// here would just error out.
+			sawGone = true
+			if _, err := os.Stat(c.wt.Path); err == nil {
+				// git also flags worktrees with a broken gitdir file as
+				// prunable while their directory still exists — leave the
+				// files alone and say so rather than orphan them silently.
+				fmt.Printf("  %s directory still exists, leaving files in place: %s\n",
+					styles.Muted.Render("warn"), c.wt.Path)
+			}
 		} else {
+			dirty, err := git.HasUncommittedChanges(ctx, c.wt.Path)
+			if err != nil {
+				fmt.Printf("  %s %v\n", styles.ErrorMessage.Render(styles.IconCross), err)
+				failed++
+				continue
+			}
+			if dirty {
+				// Classification only looks at branch tips; never force-remove
+				// a worktree that still holds uncommitted work.
+				fmt.Printf("  %s uncommitted changes — skipped (use 'koh cleanup %s' to remove anyway)\n",
+					styles.Muted.Render("skip"), c.name)
+				skipped++
+				continue
+			}
 			if err := git.RemoveWorktreeWithContext(ctx, c.wt.Path); err != nil {
 				fmt.Printf("  %s %v\n", styles.ErrorMessage.Render(styles.IconCross), err)
 				failed++
@@ -251,28 +308,55 @@ func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch
 			}
 		}
 
-		if deleteBranch && c.wt.Branch != "" {
-			if err := git.DeleteBranch(ctx, c.wt.Branch); err != nil {
-				fmt.Printf("  %s branch: %v\n", styles.Muted.Render("warn"), err)
-			} else {
-				fmt.Printf("  %s deleted branch %s\n", styles.SuccessMessage.Render(styles.IconCheck), c.wt.Branch)
+		// Close the window only after the worktree is dealt with, so a failed
+		// removal doesn't kill whatever is still running in it (matches cleanup.go).
+		if inTmux {
+			if err := tmux.CloseWindow("", c.name); err != nil {
+				// Missing window is the common case (tmux already closed) — only log unexpected errors.
+				if !strings.Contains(err.Error(), "no tmux window found") {
+					fmt.Printf("  %s tmux: %v\n", styles.Muted.Render("warn"), err)
+				}
 			}
 		}
 
+		if deleteBranch && c.wt.Branch != "" {
+			branches = append(branches, c.wt.Branch)
+		}
 		pruned++
 	}
 
-	// Mop up any administrative refs whose worktree directories were already gone.
-	if err := git.PruneRefs(ctx); err != nil {
-		fmt.Printf("%s %v\n", styles.Muted.Render("warn"), err)
+	// Drop administrative refs for gone worktrees before deleting branches —
+	// git considers a branch checked out (and refuses to delete it) until its
+	// stale worktree entry is pruned. Only run when needed: "git worktree
+	// prune" acts repo-wide, not just on the selected candidates.
+	if sawGone {
+		if err := git.PruneRefs(ctx); err != nil {
+			fmt.Printf("%s %v\n", styles.Muted.Render("warn"), err)
+		}
+	}
+
+	for _, branch := range branches {
+		if err := git.DeleteBranch(ctx, branch); err != nil {
+			fmt.Printf("%s branch %s: %v\n", styles.Muted.Render("warn"), branch, err)
+		} else {
+			fmt.Printf("%s deleted branch %s\n", styles.SuccessMessage.Render(styles.IconCheck), branch)
+		}
 	}
 
 	summary := fmt.Sprintf("Pruned %d worktree(s)", pruned)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", %d skipped", skipped)
+	}
 	if failed > 0 {
 		summary += fmt.Sprintf(", %d failed", failed)
 	}
 	fmt.Println()
+	if failed > 0 {
+		fmt.Println(styles.ErrorMessage.Render(styles.IconCross + " " + summary))
+		return fmt.Errorf("%d worktree(s) failed to prune", failed)
+	}
 	fmt.Println(styles.SuccessMessage.Render(styles.IconCheck + " " + summary))
+	return nil
 }
 
 func displayBranch(wt git.WorktreeInfo) string {
@@ -285,14 +369,15 @@ func displayBranch(wt git.WorktreeInfo) string {
 	return "(unknown)"
 }
 
+var reasonTagStyle = lipgloss.NewStyle().Foreground(styles.Warning)
+
 func renderReasons(reasons []git.PruneReason) string {
 	if len(reasons) == 0 {
 		return ""
 	}
-	tagStyle := lipgloss.NewStyle().Foreground(styles.Warning)
 	parts := make([]string, len(reasons))
 	for i, r := range reasons {
-		parts[i] = tagStyle.Render(string(r))
+		parts[i] = reasonTagStyle.Render(string(r))
 	}
 	return styles.Muted.Render("(") + strings.Join(parts, styles.Muted.Render(", ")) + styles.Muted.Render(")")
 }
@@ -307,19 +392,21 @@ type pruneModel struct {
 	cancelled    bool
 }
 
-func runPruneTUI(candidates []pruneCandidate, deleteBranch bool) ([]pruneCandidate, bool, bool, error) {
+func runPruneTUI(ctx context.Context, candidates []pruneCandidate, deleteBranch bool) ([]pruneCandidate, bool, bool, error) {
 	m := pruneModel{
 		candidates:   candidates,
 		deleteBranch: deleteBranch,
 	}
-	// Set cursor to the first prunable entry to give the user a useful starting point.
+	// Set cursor to the first pre-selected entry to give the user a useful starting point.
 	for i, c := range candidates {
-		if c.wt.IsPrunable() {
+		if c.selected {
 			m.cursor = i
 			break
 		}
 	}
-	p := tea.NewProgram(m)
+	// Wire the signal-cancellable context in so SIGTERM tears the picker
+	// down instead of leaving it running over a dead context.
+	p := tea.NewProgram(m, tea.WithContext(ctx))
 	final, err := p.Run()
 	if err != nil {
 		return nil, deleteBranch, false, err

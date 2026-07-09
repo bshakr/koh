@@ -134,8 +134,28 @@ func originHeadBranch(ctx context.Context) (string, bool) {
 }
 
 func branchExists(ctx context.Context, name string) bool {
-	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	return refExists(ctx, "refs/heads/"+name)
+}
+
+func refExists(ctx context.Context, ref string) bool {
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", ref)
 	return cmd.Run() == nil
+}
+
+// mergeBaseRef picks the ref merged branches are compared against. The
+// remote-tracking ref is preferred because "git fetch --prune" updates it,
+// while the local default branch is often stale in a worktree-centric flow.
+func mergeBaseRef(ctx context.Context, defaultBranch string) string {
+	if defaultBranch == "" {
+		return ""
+	}
+	if ref := "refs/remotes/origin/" + defaultBranch; refExists(ctx, ref) {
+		return ref
+	}
+	if ref := "refs/heads/" + defaultBranch; refExists(ctx, ref) {
+		return ref
+	}
+	return ""
 }
 
 // FetchPrune runs "git fetch --prune" so the upstream-gone classification is
@@ -144,22 +164,33 @@ func branchExists(ctx context.Context, name string) bool {
 func FetchPrune(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "git", "fetch", "--prune")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git fetch --prune failed: %s", strings.TrimSpace(string(output)))
+		return wrapGitError("git fetch --prune failed", output, err)
 	}
 	return nil
 }
 
-// IsMerged reports whether branch is reachable from base. Both branches must
-// exist locally; missing branches return (false, nil) so callers can skip.
-func IsMerged(ctx context.Context, branch, base string) (bool, error) {
-	if branch == "" || base == "" || branch == base {
+// wrapGitError prefers git's own output as the reason but falls back to (and
+// chains) the exec error, so cancellations and signal deaths stay inspectable
+// via errors.Is when git produced no output.
+func wrapGitError(op string, output []byte, err error) error {
+	if msg := strings.TrimSpace(string(output)); msg != "" {
+		return fmt.Errorf("%s: %s", op, msg)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+// IsMerged reports whether branch is reachable from baseRef, a fully
+// qualified ref such as "refs/heads/main" or "refs/remotes/origin/main".
+// Missing refs return (false, nil) so callers can skip.
+func IsMerged(ctx context.Context, branch, baseRef string) (bool, error) {
+	if branch == "" || baseRef == "" || baseRef == "refs/heads/"+branch {
 		return false, nil
 	}
-	if !branchExists(ctx, branch) || !branchExists(ctx, base) {
+	if !branchExists(ctx, branch) || !refExists(ctx, baseRef) {
 		return false, nil
 	}
 	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor",
-		"refs/heads/"+branch, "refs/heads/"+base)
+		"refs/heads/"+branch, baseRef)
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
@@ -187,14 +218,15 @@ func UpstreamGone(ctx context.Context, branch string) (bool, error) {
 	return strings.Contains(string(out), "[gone]"), nil
 }
 
-// DeleteBranch force-deletes a local branch.
+// DeleteBranch force-deletes a local branch. The "--" separator keeps branch
+// names that start with a dash from being parsed as options.
 func DeleteBranch(ctx context.Context, branch string) error {
 	if branch == "" {
 		return fmt.Errorf("branch name is empty")
 	}
-	cmd := exec.CommandContext(ctx, "git", "branch", "-D", branch)
+	cmd := exec.CommandContext(ctx, "git", "branch", "-D", "--", branch)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git branch -D %s failed: %s", branch, strings.TrimSpace(string(output)))
+		return wrapGitError(fmt.Sprintf("git branch -D %s failed", branch), output, err)
 	}
 	return nil
 }
@@ -204,9 +236,21 @@ func DeleteBranch(ctx context.Context, branch string) error {
 func PruneRefs(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "git", "worktree", "prune")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree prune failed: %s", strings.TrimSpace(string(output)))
+		return wrapGitError("git worktree prune failed", output, err)
 	}
 	return nil
+}
+
+// HasUncommittedChanges reports whether the worktree at path contains
+// modified or untracked files. Prune uses it as a safety check before
+// destructive removal, since classification only looks at branch tips.
+func HasUncommittedChanges(ctx context.Context, path string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", path, "status", "--porcelain")
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git status failed in %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(output)) != "", nil
 }
 
 // ClassifyWorktrees fills in PruneReason values for each worktree.
@@ -214,6 +258,7 @@ func PruneRefs(ctx context.Context) error {
 // ReasonGoneFromRemote require additional git calls.
 func ClassifyWorktrees(ctx context.Context, worktrees []WorktreeInfo) ([]WorktreeInfo, error) {
 	defaultBranch, _ := DefaultBranch(ctx) // may be empty; merged check skips when empty
+	baseRef := mergeBaseRef(ctx, defaultBranch)
 
 	out := make([]WorktreeInfo, len(worktrees))
 	for i, wt := range worktrees {
@@ -223,8 +268,10 @@ func ClassifyWorktrees(ctx context.Context, worktrees []WorktreeInfo) ([]Worktre
 			continue
 		}
 
-		if defaultBranch != "" {
-			merged, err := IsMerged(ctx, wt.Branch, defaultBranch)
+		// The default branch itself is never "merged", even when the base is
+		// its own remote-tracking ref.
+		if baseRef != "" && wt.Branch != defaultBranch {
+			merged, err := IsMerged(ctx, wt.Branch, baseRef)
 			if err != nil {
 				return nil, err
 			}

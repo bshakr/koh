@@ -51,8 +51,9 @@ func runList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("not in a git repository")
 	}
 
-	// Determine the main repo root (handle being inside a worktree)
-	mainRepoRoot, err := git.GetMainRepoRootOrCwd()
+	// Resolve via git-common-dir (not cwd) so list works from any
+	// subdirectory of the main repo, not just its root.
+	mainRepoRoot, err := git.GetMainRepoRoot()
 	if err != nil {
 		return fmt.Errorf("failed to get repository root: %w", err)
 	}
@@ -83,31 +84,25 @@ func runList(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
-	classified, err := git.ClassifyWorktrees(ctx, rawWorktrees)
+	// Filter to koh worktrees before classifying — classification costs git
+	// subprocesses per worktree, and sharing prune's predicate keeps the two
+	// commands agreeing on what a koh worktree is.
+	kohWorktrees := filterKohWorktrees(rawWorktrees, koDir)
+
+	classified, err := git.ClassifyWorktrees(ctx, kohWorktrees)
 	if err != nil {
 		// Fall back to unclassified data — reason tags will be empty but the list still works.
-		classified = rawWorktrees
+		fmt.Println(styles.Muted.Render(fmt.Sprintf("Warning: could not classify worktrees: %v", err)))
+		classified = kohWorktrees
 	}
 
 	var worktrees []worktreeItem
 	for _, wt := range classified {
-		if !strings.Contains(wt.Path, "/.koh/") {
-			continue
-		}
-		isCurrent := currentWorktreePath != "" && wt.Path == currentWorktreePath
-		branch := wt.Branch
-		if branch == "" {
-			if wt.Detached {
-				branch = "(detached)"
-			} else {
-				branch = "(unknown)"
-			}
-		}
 		worktrees = append(worktrees, worktreeItem{
 			name:      filepath.Base(wt.Path),
-			branch:    branch,
+			branch:    displayBranch(wt),
 			path:      wt.Path,
-			isCurrent: isCurrent,
+			isCurrent: currentWorktreePath != "" && samePath(wt.Path, currentWorktreePath),
 			reasons:   wt.Reasons,
 		})
 	}

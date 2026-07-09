@@ -124,12 +124,12 @@ func TestIsMergedSelfReturnsFalse(t *testing.T) {
 		t.Skip("not in a git repository")
 	}
 	ctx := t.Context()
-	merged, err := IsMerged(ctx, "main", "main")
+	merged, err := IsMerged(ctx, "main", "refs/heads/main")
 	if err != nil {
 		t.Fatalf("IsMerged() error: %v", err)
 	}
 	if merged {
-		t.Error("expected IsMerged(main, main) = false (self-compare guard)")
+		t.Error("expected IsMerged(main, refs/heads/main) = false (self-compare guard)")
 	}
 }
 
@@ -138,7 +138,7 @@ func TestIsMergedMissingBranch(t *testing.T) {
 		t.Skip("not in a git repository")
 	}
 	ctx := t.Context()
-	merged, err := IsMerged(ctx, "definitely-not-a-real-branch-xyz", "main")
+	merged, err := IsMerged(ctx, "definitely-not-a-real-branch-xyz", "refs/heads/main")
 	if err != nil {
 		t.Fatalf("IsMerged() error: %v", err)
 	}

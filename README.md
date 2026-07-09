@@ -33,7 +33,7 @@ Removes worktrees that are safe to clean up in bulk. A worktree is considered pr
 
 `koh list` displays the same labels next to each worktree so you can see why something would be pruned.
 
-By default `koh prune` opens an interactive picker with prunable worktrees pre-checked. The current worktree is never selectable.
+By default `koh prune` opens an interactive picker with prunable worktrees pre-checked. The current worktree is never pruned — not even with `--yes` — and worktrees with uncommitted changes are skipped rather than force-removed (use `koh cleanup <name>` for those).
 
 ## Prerequisites
 

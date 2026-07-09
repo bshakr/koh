@@ -17,7 +17,7 @@ func makeCandidate(name, branch string, reasons []git.PruneReason, isCurrent boo
 	return pruneCandidate{
 		wt:        wt,
 		name:      name,
-		selected:  wt.IsPrunable(),
+		selected:  wt.IsPrunable() && !isCurrent,
 		isCurrent: isCurrent,
 	}
 }
@@ -27,6 +27,8 @@ func TestFilterPrunable(t *testing.T) {
 		makeCandidate("clean", "main", nil, false),
 		makeCandidate("merged", "feat", []git.PruneReason{git.ReasonMerged}, false),
 		makeCandidate("gone", "old", []git.PruneReason{git.ReasonGone, git.ReasonGoneFromRemote}, false),
+		// Prunable but current — must never be offered to --yes / --dry-run.
+		makeCandidate("current", "feat-cur", []git.PruneReason{git.ReasonMerged}, true),
 	}
 	got := filterPrunable(candidates)
 	if len(got) != 2 {
@@ -48,6 +50,7 @@ func TestPathInside(t *testing.T) {
 		{"same", "/repo/.koh", "/repo/.koh", true},
 		{"sibling", "/repo/other/feature", "/repo/.koh", false},
 		{"parent", "/repo", "/repo/.koh", false},
+		{"dotdot-prefixed name", "/repo/.koh/..archive", "/repo/.koh", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
