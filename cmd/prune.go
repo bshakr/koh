@@ -302,8 +302,9 @@ func executePrune(ctx context.Context, candidates []pruneCandidate, deleteBranch
 				failed++
 				continue
 			}
-			// git worktree remove can leave the directory behind — match cleanup.go.
-			if err := os.RemoveAll(c.wt.Path); err != nil {
+			// git worktree remove can leave the directory behind (read-only
+			// subdirectories, partial failures) — match cleanup.go.
+			if err := forceRemoveAll(c.wt.Path); err != nil {
 				fmt.Printf("  %s remove dir: %v\n", styles.Muted.Render("warn"), err)
 			}
 		}

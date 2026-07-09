@@ -57,7 +57,24 @@ func RemoveWorktree(path string) error {
 
 // RemoveWorktreeWithContext removes a git worktree at the specified path with cancellation support
 func RemoveWorktreeWithContext(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", path)
+	return removeWorktree(ctx, path, false)
+}
+
+// RemoveWorktreeForcedWithContext removes a worktree passing --force twice,
+// which git requires for locked worktrees and (on older gits) ones containing
+// submodules. Cleanup uses it because the user explicitly named the worktree;
+// bulk prune stays on the single-force variant.
+func RemoveWorktreeForcedWithContext(ctx context.Context, path string) error {
+	return removeWorktree(ctx, path, true)
+}
+
+func removeWorktree(ctx context.Context, path string, doubleForce bool) error {
+	args := []string{"worktree", "remove", "--force"}
+	if doubleForce {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.Canceled {
