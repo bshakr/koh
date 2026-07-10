@@ -114,8 +114,17 @@ func IsInWorktree() bool {
 		return false
 	}
 
-	gitDir := strings.TrimSpace(string(gitDirOutput))
-	commonDir := strings.TrimSpace(string(commonDirOutput))
+	// git prints these paths relative or absolute depending on version and
+	// cwd (e.g. ".git" from the repo root but an absolute path elsewhere), so
+	// compare them absolutized. Both resolve against the same cwd git ran in.
+	gitDir, err := filepath.Abs(strings.TrimSpace(string(gitDirOutput)))
+	if err != nil {
+		return false
+	}
+	commonDir, err := filepath.Abs(strings.TrimSpace(string(commonDirOutput)))
+	if err != nil {
+		return false
+	}
 
 	// If git-dir and git-common-dir are different, we're in a worktree
 	return gitDir != commonDir
@@ -130,10 +139,15 @@ func GetMainRepoRoot() (string, error) {
 		return "", fmt.Errorf("failed to get git common dir: %w", err)
 	}
 
-	commonDir := strings.TrimSpace(string(output))
+	// Absolutize before taking the parent: from the repo root git prints just
+	// ".git", and Dir(".git") would return "." — a cwd-dependent root that
+	// breaks callers joining paths against it from subdirectories.
+	commonDir, err := filepath.Abs(strings.TrimSpace(string(output)))
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve git common dir: %w", err)
+	}
 	// The common dir is .git, so we need to go up one level
-	mainRepoRoot := filepath.Dir(commonDir)
-	return mainRepoRoot, nil
+	return filepath.Dir(commonDir), nil
 }
 
 // GetMainRepoRootOrCwd returns the main repository root if in a worktree,

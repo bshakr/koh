@@ -487,9 +487,8 @@ func resolveMainRepoRoot() string {
 // currentWorktreeLabel returns the name shown in the dashboard's "Current"
 // field: the active worktree's directory name, or "main" when run from the
 // primary checkout (including any subdirectory of it). It compares the current
-// toplevel against mainRepoRoot instead of using IsInWorktree(), which can
-// misreport a subdirectory of the main repo as a worktree when git returns
-// git-dir absolute but git-common-dir relative.
+// toplevel against mainRepoRoot directly — the dashboard needs that path
+// equality anyway — rather than going through IsInWorktree().
 func currentWorktreeLabel(mainRepoRoot string) string {
 	top, err := git.GetCurrentWorktreePath()
 	if err != nil || samePath(top, mainRepoRoot) {
