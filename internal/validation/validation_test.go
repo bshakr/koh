@@ -155,6 +155,24 @@ func TestValidateWorktreeName(t *testing.T) {
 			shouldErr: true,
 			errMsg:    "path separators",
 		},
+		{
+			name:      "colon (tmux target separator)",
+			input:     "feature:branch",
+			shouldErr: true,
+			errMsg:    "cannot contain ':' or '|'",
+		},
+		{
+			name:      "pipe (koh window separator)",
+			input:     "feature|branch",
+			shouldErr: true,
+			errMsg:    "cannot contain ':' or '|'",
+		},
+		{
+			name:      "both colon and pipe",
+			input:     "foo:bar|baz",
+			shouldErr: true,
+			errMsg:    "cannot contain ':' or '|'",
+		},
 	}
 
 	for _, tt := range tests {
