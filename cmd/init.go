@@ -34,17 +34,18 @@ const (
 )
 
 type initModel struct {
-	setupInput   textinput.Model
-	paneInput    textinput.Model
-	paneCommands []string
-	err          error
-	config       *config.Config
-	step         step
-	choice       int // 0 = add pane, 1 = finish setup
+	setupInput     textinput.Model
+	paneInput      textinput.Model
+	paneCommands   []string
+	err            error
+	config         *config.Config
+	step           step
+	choice         int  // 0 = add pane, 1 = finish setup
+	existingConfig bool // true when seeded from an existing .kohconfig
 }
 
 func initialModel() initModel {
-	cfg := config.DefaultConfig()
+	cfg, existing := loadConfigForInit()
 
 	// Setup script input
 	setupInput := textinput.New()
@@ -62,14 +63,31 @@ func initialModel() initModel {
 	paneInput.Width = 50
 	paneInput.Prompt = "❯ "
 
+	// Pre-fill the pane list from the loaded config so re-running init edits the
+	// existing setup instead of resetting it. Copy the slice so appends made in
+	// the wizard never mutate the config's backing array.
+	paneCommands := make([]string, len(cfg.PaneCommands))
+	copy(paneCommands, cfg.PaneCommands)
+
 	return initModel{
-		step:         stepSetupScript,
-		config:       cfg,
-		setupInput:   setupInput,
-		paneInput:    paneInput,
-		paneCommands: []string{},
-		choice:       0,
+		step:           stepSetupScript,
+		config:         cfg,
+		setupInput:     setupInput,
+		paneInput:      paneInput,
+		paneCommands:   paneCommands,
+		choice:         0,
+		existingConfig: existing,
 	}
+}
+
+// loadConfigForInit returns the existing on-disk config when one can be read so
+// the wizard seeds from it, along with whether it came from an existing file.
+// Any failure (not a repo, missing or unreadable file) falls back to defaults.
+func loadConfigForInit() (cfg *config.Config, existing bool) {
+	if loaded, err := config.Load(); err == nil {
+		return loaded, true
+	}
+	return config.DefaultConfig(), false
 }
 
 func (m initModel) Init() tea.Cmd {
@@ -238,6 +256,13 @@ func (m initModel) View() string {
 
 		b.WriteString(box)
 		b.WriteString("\n\n")
+		if m.existingConfig {
+			warning := lipgloss.NewStyle().
+				Foreground(styles.Warning).
+				Render("  " + styles.IconArrow + " This overwrites your existing .kohconfig")
+			b.WriteString(warning)
+			b.WriteString("\n\n")
+		}
 		b.WriteString(styles.Help.Render("  Press Enter to save, Ctrl+C to cancel"))
 		b.WriteString("\n")
 
