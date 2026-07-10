@@ -256,10 +256,23 @@ func (m initModel) View() string {
 	return b.String()
 }
 
+// finalInitErr reports a terminal wizard failure recorded on the final model.
+// tea.Program.Run only surfaces TTY-level errors, so a failed config Save is
+// carried on the model's err field and must be read out here — otherwise a
+// wizard that displayed "Error saving configuration" would still exit 0.
+// A cancelled wizard leaves err nil, so this returns nil for that case.
+func finalInitErr(finalModel tea.Model) error {
+	m, ok := finalModel.(initModel)
+	if !ok {
+		return nil
+	}
+	return m.err
+}
+
 func runInit(_ *cobra.Command, _ []string) error {
-	p := tea.NewProgram(initialModel())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := tea.NewProgram(initialModel()).Run()
+	if err != nil {
 		return fmt.Errorf("error running interactive setup: %w", err)
 	}
-	return nil
+	return finalInitErr(finalModel)
 }
