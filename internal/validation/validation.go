@@ -35,6 +35,15 @@ func ValidateWorktreeName(name string) error {
 		return fmt.Errorf("worktree name cannot contain path separators (/ or \\)")
 	}
 
+	// Reject characters that koh reserves for tmux window bookkeeping.
+	// koh names each window "repo|worktree", so "|" is its own separator, and
+	// ":" is tmux's target-syntax separator (as in "session:window"). A worktree
+	// name containing either character corrupts window lookup, causing 'koh
+	// switch' to open a duplicate window and 'koh cleanup' to miss the original.
+	if strings.ContainsAny(name, ":|") {
+		return fmt.Errorf("worktree name cannot contain ':' or '|'")
+	}
+
 	// Check for path traversal attempts
 	if name == "." || name == ".." {
 		return fmt.Errorf("worktree name cannot be '.' or '..'")

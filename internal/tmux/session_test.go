@@ -551,6 +551,98 @@ func TestCloseWindowWithCtrlC(t *testing.T) {
 	}
 }
 
+// TestParseWindowLine exercises the pure parsing of
+// `tmux list-windows -F "#{window_index}:#{window_name}"` output, focusing on
+// worktree names that themselves contain the ":" and "|" separators. This runs
+// without a live tmux server.
+func TestParseWindowLine(t *testing.T) {
+	tests := []struct {
+		name         string
+		line         string
+		wantIndex    string
+		wantWindow   string
+		wantWorktree string
+		wantOK       bool
+	}{
+		{
+			name:         "plain name",
+			line:         "0:repo|feature",
+			wantIndex:    "0",
+			wantWindow:   "repo|feature",
+			wantWorktree: "feature",
+			wantOK:       true,
+		},
+		{
+			name:         "worktree contains colon",
+			line:         "3:repo|foo:bar",
+			wantIndex:    "3",
+			wantWindow:   "repo|foo:bar",
+			wantWorktree: "foo:bar",
+			wantOK:       true,
+		},
+		{
+			name:         "worktree contains pipe",
+			line:         "2:repo|foo|bar",
+			wantIndex:    "2",
+			wantWindow:   "repo|foo|bar",
+			wantWorktree: "foo|bar",
+			wantOK:       true,
+		},
+		{
+			name:         "worktree contains both colon and pipe",
+			line:         "10:repo|foo:bar|baz",
+			wantIndex:    "10",
+			wantWindow:   "repo|foo:bar|baz",
+			wantWorktree: "foo:bar|baz",
+			wantOK:       true,
+		},
+		{
+			name:         "repo name irrelevant to worktree match",
+			line:         "1:my-repo|task-42",
+			wantIndex:    "1",
+			wantWindow:   "my-repo|task-42",
+			wantWorktree: "task-42",
+			wantOK:       true,
+		},
+		{
+			name:   "no pipe separator in window name",
+			line:   "1:plainwindow",
+			wantOK: false,
+		},
+		{
+			name:   "no colon separator",
+			line:   "notawindowline",
+			wantOK: false,
+		},
+		{
+			name:   "empty line",
+			line:   "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			index, window, worktree, ok := parseWindowLine(tt.line)
+			if ok != tt.wantOK {
+				t.Fatalf("parseWindowLine(%q) ok = %v, want %v", tt.line, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if index != tt.wantIndex {
+				t.Errorf("parseWindowLine(%q) index = %q, want %q", tt.line, index, tt.wantIndex)
+			}
+			if window != tt.wantWindow {
+				t.Errorf("parseWindowLine(%q) window = %q, want %q", tt.line, window, tt.wantWindow)
+			}
+			if worktree != tt.wantWorktree {
+				t.Errorf("parseWindowLine(%q) worktree = %q, want %q", tt.line, worktree, tt.wantWorktree)
+			}
+		})
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsAt(s, substr))

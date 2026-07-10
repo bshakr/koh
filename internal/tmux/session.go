@@ -246,6 +246,34 @@ func CreateSessionWithContext(ctx context.Context, repoName, worktreeName, workt
 	return nil
 }
 
+// parseWindowLine parses a single line from
+// `tmux list-windows -F "#{window_index}:#{window_name}"`.
+//
+// The line has the shape "index:window_name" where window_name is
+// "repo|worktree". Both the window index and the "repo|" prefix are free of
+// ambiguity (the index is numeric and the first "|" is koh's separator), but
+// the worktree portion may itself contain ":" and "|". To parse robustly we
+// split only on the FIRST ":" (separating index from name) and only on the
+// FIRST "|" (separating repo from worktree), so a worktree such as "foo:bar"
+// or "a|b" is recovered intact.
+//
+// ok is false when the line does not match the expected "index:repo|worktree"
+// shape (e.g. blank trailing lines).
+func parseWindowLine(line string) (index, windowName, worktree string, ok bool) {
+	indexAndName := strings.SplitN(line, ":", 2)
+	if len(indexAndName) != 2 {
+		return "", "", "", false
+	}
+	index = indexAndName[0]
+	windowName = indexAndName[1]
+
+	repoAndWorktree := strings.SplitN(windowName, "|", 2)
+	if len(repoAndWorktree) != 2 {
+		return "", "", "", false
+	}
+	return index, windowName, repoAndWorktree[1], true
+}
+
 // findWindowByWorktree returns the window index and name for a given worktree.
 // Returns empty strings if not found. This is a helper function to avoid code duplication.
 func findWindowByWorktree(ctx context.Context, worktreeName string) (index, name string, err error) {
@@ -257,16 +285,9 @@ func findWindowByWorktree(ctx context.Context, worktreeName string) (index, name
 
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
-		// Parse the line format: "index:window_name"
-		parts := strings.Split(line, ":")
-		if len(parts) >= 2 {
-			windowName := parts[1]
-			// Expected window name format: "repo-name|worktree-name"
-			// Use exact match on the worktree part to avoid substring issues
-			nameParts := strings.Split(windowName, "|")
-			if len(nameParts) == 2 && nameParts[1] == worktreeName {
-				return parts[0], windowName, nil
-			}
+		idx, windowName, worktree, ok := parseWindowLine(line)
+		if ok && worktree == worktreeName {
+			return idx, windowName, nil
 		}
 	}
 	return "", "", nil
