@@ -18,8 +18,12 @@ import (
 var switchCmd = &cobra.Command{
 	Use:   "switch <worktree-name>",
 	Short: "Switch to an existing worktree's tmux session",
-	Long: `Switch to an existing git worktree's tmux session.
-If the tmux window doesn't exist, it will be created automatically according to your configuration.`,
+	Long: `Switch to an existing worktree's tmux window.
+
+If the window no longer exists (e.g. after a tmux restart), it is
+recreated with the panes configured in your .kohconfig.
+
+Must be run from inside a tmux session.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSwitch,
 }

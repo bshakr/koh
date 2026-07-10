@@ -18,10 +18,17 @@ import (
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup [worktree-name]",
 	Short: "Close tmux session and remove worktree",
-	Long: `Closes the associated tmux window and removes the git worktree.
+	Long: `Remove the git worktree and close its tmux window.
+
+Removal is forced: uncommitted changes in the worktree are discarded
+without prompting. Commit, stash, or push anything you want to keep
+before running cleanup. To bulk-remove only worktrees that are safe to
+delete, use 'koh prune' — it skips worktrees with uncommitted changes.
 
 If no worktree name is provided and you're currently in a worktree,
-it will automatically clean up the current worktree.`,
+the current worktree is cleaned up.
+
+Not supported on Windows.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runCleanup,
 }

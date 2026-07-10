@@ -17,8 +17,13 @@ import (
 var newCmd = &cobra.Command{
 	Use:   "new <worktree-name>",
 	Short: "Create a new worktree and tmux session",
-	Long: `Create a new git worktree and automatically set up a tmux session.
-The session will have one pane for the setup script and additional panes for configured commands.`,
+	Long: `Create a new git worktree in .koh/<worktree-name> and open a tmux
+window with one pane running your setup script and additional panes
+running the commands from your .kohconfig.
+
+Must be run from inside a tmux session. If the setup script is missing
+from the new worktree (e.g. not committed yet), it is copied over from
+the main repository automatically.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runNew,
 }

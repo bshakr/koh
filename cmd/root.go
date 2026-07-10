@@ -637,6 +637,34 @@ func customUsageFunc(cmd *cobra.Command) error {
 	fprintln(out, border)
 	fprintln(out)
 
+	// Description section — skipped for the root command, whose long
+	// description just repeats the header title above.
+	if cmd.HasParent() {
+		description := cmd.Long
+		if description == "" {
+			description = cmd.Short
+		}
+
+		if description != "" {
+			descHeader := renderCentered(
+				lipgloss.NewStyle().
+					Bold(true).
+					Foreground(styles.Primary).
+					Render("📝 DESCRIPTION"),
+				terminalWidth,
+			)
+
+			fprintln(out, descHeader)
+			// Center the description as a block so multi-line text keeps its
+			// own left alignment (bullets, indentation) intact: pad every line
+			// to the widest line first, otherwise PlaceHorizontal re-centers
+			// each line individually.
+			block := lipgloss.NewStyle().Width(lipgloss.Width(description)).Render(description)
+			fprintln(out, lipgloss.PlaceHorizontal(terminalWidth, lipgloss.Center, block))
+			fprintln(out)
+		}
+	}
+
 	// Usage section
 	if cmd.Runnable() {
 		usageHeader := renderCentered(
