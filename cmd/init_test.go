@@ -1,16 +1,21 @@
 package cmd
 
-// Tests for the init wizard's error propagation. The bug these guard against:
-// `koh init` stored a failed config Save on the model's err field but runInit
-// never read it, so a failed save exited 0. setupRepo / t.Chdir come from
-// integration_test.go (same package) and keep tests off any real tmux server.
+// Tests for the init wizard. Two concerns live here:
+//   - error propagation: `koh init` stored a failed config Save on the model's
+//     err field but runInit never read it, so a failed save exited 0.
+//   - config seeding: re-running init must pre-fill the wizard from the
+//     existing .kohconfig instead of resetting to defaults.
+// setupRepo / t.Chdir come from integration_test.go (same package) and keep
+// tests off any real tmux server.
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/bshakr/koh/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -119,3 +124,88 @@ type stubModel struct{}
 func (stubModel) Init() tea.Cmd                         { return nil }
 func (m stubModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 func (stubModel) View() string                          { return "" }
+
+// writeConfig writes a .kohconfig at the repo root, mirroring config.Save's format.
+func writeConfig(t *testing.T, repo string, cfg *config.Config) {
+	t.Helper()
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".kohconfig"), data, 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+}
+
+// TestInitialModelSeedsFromExistingConfig verifies re-running init edits the
+// existing config rather than resetting to defaults: the wizard pre-fills the
+// setup script and every pane command from the on-disk .kohconfig.
+func TestInitialModelSeedsFromExistingConfig(t *testing.T) {
+	repo := setupRepo(t)
+	t.Chdir(repo)
+
+	existing := &config.Config{
+		SetupScript:  "./bin/custom-setup",
+		PaneCommands: []string{"nvim", "npm run dev", "lazygit", "htop", "tail -f log"},
+	}
+	writeConfig(t, repo, existing)
+
+	m := initialModel()
+
+	if !m.existingConfig {
+		t.Error("existingConfig = false, want true when a .kohconfig is present")
+	}
+	if got := m.setupInput.Value(); got != existing.SetupScript {
+		t.Errorf("setupInput = %q, want %q", got, existing.SetupScript)
+	}
+	if got := len(m.paneCommands); got != len(existing.PaneCommands) {
+		t.Fatalf("paneCommands length = %d, want %d", got, len(existing.PaneCommands))
+	}
+	for i, want := range existing.PaneCommands {
+		if m.paneCommands[i] != want {
+			t.Errorf("paneCommands[%d] = %q, want %q", i, m.paneCommands[i], want)
+		}
+	}
+}
+
+// TestInitialModelPaneCommandsAreCopied ensures the pre-filled pane list does
+// not alias the loaded config's slice, so wizard edits can't corrupt it.
+func TestInitialModelPaneCommandsAreCopied(t *testing.T) {
+	repo := setupRepo(t)
+	t.Chdir(repo)
+
+	writeConfig(t, repo, &config.Config{
+		SetupScript:  "./bin/setup",
+		PaneCommands: []string{"vim"},
+	})
+
+	m := initialModel()
+	if len(m.paneCommands) != 1 {
+		t.Fatalf("paneCommands length = %d, want 1", len(m.paneCommands))
+	}
+	// Mutating the model's slice must not reach back into m.config.
+	m.paneCommands[0] = "mutated"
+	if m.config.PaneCommands[0] != "vim" {
+		t.Errorf("config.PaneCommands aliased model slice: got %q, want %q",
+			m.config.PaneCommands[0], "vim")
+	}
+}
+
+// TestInitialModelDefaultsWhenNoConfig verifies that with no .kohconfig on disk
+// the wizard starts from defaults and does not claim an existing config.
+func TestInitialModelDefaultsWhenNoConfig(t *testing.T) {
+	repo := setupRepo(t)
+	t.Chdir(repo)
+
+	m := initialModel()
+
+	if m.existingConfig {
+		t.Error("existingConfig = true, want false when no .kohconfig is present")
+	}
+	if got, want := m.setupInput.Value(), config.DefaultConfig().SetupScript; got != want {
+		t.Errorf("setupInput = %q, want default %q", got, want)
+	}
+	if len(m.paneCommands) != 0 {
+		t.Errorf("paneCommands = %v, want empty", m.paneCommands)
+	}
+}
