@@ -389,3 +389,36 @@ func TestCleanupNotFoundReturnsError(t *testing.T) {
 		t.Error("expected an error when nothing was found to clean up, got success")
 	}
 }
+
+// --- new ---
+
+// TestNewRefusesOutsideTmux verifies that koh new fails fast when not run from
+// inside a tmux session, before any worktree is created or registered. Without
+// the precheck, the worktree was created (and registered) first and only then
+// did tmux session creation fail, leaving a half-created worktree that made
+// re-running report "already exists". setupRepo forces TMUX="", so runNew is
+// always "outside tmux" here.
+func TestNewRefusesOutsideTmux(t *testing.T) {
+	repo := setupRepo(t)
+	// runNew checks for a .kohconfig; write a minimal one (empty setup script,
+	// no pane commands) so the test exercises the tmux precheck rather than a
+	// missing-config error.
+	if err := os.WriteFile(filepath.Join(repo, ".kohconfig"), []byte(`{"setup_script":"","pane_commands":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(repo)
+	err := runNew(nil, []string{"wt-notmux"})
+	if err == nil {
+		t.Fatal("expected runNew to fail when not in a tmux session, got success")
+	}
+	if !strings.Contains(err.Error(), "tmux") {
+		t.Errorf("expected a tmux-related error, got: %v", err)
+	}
+	// The precheck must fire before the worktree is created on disk or
+	// registered with git — otherwise a retry hits "already exists".
+	assertDirGone(t, filepath.Join(repo, ".koh", "wt-notmux"))
+	if isRegistered(t, repo, "wt-notmux") {
+		t.Error("expected no worktree registration when the tmux precheck fails")
+	}
+}
