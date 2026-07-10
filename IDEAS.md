@@ -2,21 +2,29 @@
 
 Future improvements that aren't scheduled yet — so they don't get lost.
 
-## Release automation with goreleaser
+## Prebuilt release binaries with goreleaser
 
-Today a release is manual: tag `vX.Y.Z`, push, then hand-edit `tag:` and
-`revision:` in `bshakr/homebrew-koh/Formula/koh.rb`. Replace this with
-[goreleaser](https://goreleaser.com) triggered by a tag-push GitHub Action:
+The release flow is already automated end to end:
 
-- builds prebuilt binaries per platform and attaches them to a GitHub Release
-- rewrites the tap formula automatically (`brews:` config) — `brew install koh`
-  no longer needs a Go toolchain and becomes near-instant
-- needs a fine-grained PAT with write access to `bshakr/homebrew-koh`, stored
-  as a repo secret
+1. `make release VERSION=x.y.z` — validates the version, branch, and clean
+   working tree, runs tests, creates and pushes the `vx.y.z` tag, and
+   publishes a GitHub Release via `gh`.
+2. Publishing the release fires `.github/workflows/update-homebrew-tap.yml`,
+   which sends a `repository_dispatch` (`update-formula`) to
+   `bshakr/homebrew-koh` with the tag and commit SHA; that repo updates
+   `Formula/koh.rb` itself.
 
-Interim smaller step if goreleaser feels heavy: a tag-triggered workflow that
-just sed-updates `tag:`/`revision:` in the formula and pushes (~30 lines of
-YAML, same PAT requirement), keeping the build-from-source formula.
+Caveat: the tap workflow only fires on *published GitHub Releases*, not on
+tag pushes — v0.1.8 and v0.1.9 were tagged without releases, so the formula
+had to be updated by hand for those. Releasing via `make release` (rather
+than tagging directly) avoids this.
+
+What [goreleaser](https://goreleaser.com) would still add: prebuilt
+per-platform binaries attached to each GitHub Release, so `brew install koh`
+(and direct downloads) no longer need a Go toolchain and become
+near-instant. If it also takes over formula updates (`brews:` config), it
+needs a fine-grained PAT with write access to `bshakr/homebrew-koh` stored
+as a repo secret.
 
 ## Other
 

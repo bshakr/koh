@@ -7,3 +7,4 @@ koh
 *.dylib
 bin/
 .kohconfig
+coverage.out

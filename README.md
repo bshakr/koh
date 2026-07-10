@@ -16,12 +16,16 @@ Creates a new development environment:
    - **First pane**: Runs your setup script (e.g., `./bin/setup`)
    - **Additional panes**: Runs any commands you configure (e.g., dev server, editor, etc.)
 
+### `koh switch <worktree-name>`
+
+Jumps to the tmux window for an existing worktree. If the window no longer exists (e.g. after a tmux restart), it's recreated with your configured panes. Like `koh new`, it must be run from inside a tmux session.
+
 ### `koh cleanup <worktree-name>`
 
 Cleans up after you're done:
 
-1. Closes the tmux window for the worktree
-2. Removes the git worktree from `.koh/<worktree-name>`
+1. Force-removes the git worktree from `.koh/<worktree-name>` — **uncommitted changes are discarded**
+2. Closes the tmux window for the worktree
 
 ### `koh prune`
 
@@ -38,7 +42,9 @@ By default `koh prune` opens an interactive picker with prunable worktrees pre-c
 ## Prerequisites
 
 - [git](https://git-scm.com/)
-- [tmux](https://github.com/tmux/tmux)
+- [tmux](https://github.com/tmux/tmux) — `koh new` and `koh switch` must be run from inside a tmux session
+- macOS or Linux — `koh cleanup` and `koh prune` are not supported on Windows
+- [Go](https://go.dev/) 1.24+ if building from source (the Homebrew tap also builds from source, so it installs Go as a build dependency)
 - A setup script in your repository (optional, configurable via `koh init`)
 
 ## Installation
@@ -48,6 +54,12 @@ By default `koh prune` opens an interactive picker with prunable worktrees pre-c
 ```bash
 brew tap bshakr/koh
 brew install koh
+```
+
+### Using Go
+
+```bash
+go install github.com/bshakr/koh@latest
 ```
 
 ### Building from source
@@ -60,6 +72,23 @@ cd koh
 # Or use go directly
 go build -o koh
 ```
+
+### Shell completions
+
+`koh` ships with completion scripts for bash, zsh, fish, and PowerShell via `koh completion <shell>`. For example:
+
+```bash
+# zsh
+koh completion zsh > "${fpath[1]}/_koh"
+
+# bash
+koh completion bash > /usr/local/etc/bash_completion.d/koh
+
+# fish
+koh completion fish > ~/.config/fish/completions/koh.fish
+```
+
+Run `koh completion <shell> --help` for shell-specific setup instructions.
 
 ## Usage
 
@@ -90,6 +119,16 @@ This will:
 - Create a worktree at `.koh/feature-auth`
 - Set up your configured tmux environment with panes running your specified commands
 
+If the setup script doesn't exist in the new worktree yet (e.g. it isn't committed), `koh new` copies it over from the main repository automatically.
+
+### Switching between worktrees
+
+```bash
+koh switch <worktree-name>
+```
+
+Or run `koh list` for an interactive picker: navigate with the arrow keys or `j`/`k`, press `enter` to switch to the highlighted worktree, and `q` to quit.
+
 ### Normal development workflow
 
 Once your session is set up:
@@ -108,10 +147,10 @@ koh cleanup feature-auth
 
 This will:
 
+- Remove the git worktree (forced — see warning below)
 - Close the tmux window with all its panes
-- Remove the git worktree
 
-**Note:** Make sure you've pushed or merged your changes before running cleanup!
+> **⚠️ Warning:** `koh cleanup` force-removes the worktree and **discards uncommitted changes without prompting**. Commit, stash, or push anything you want to keep before running it. If you only want to remove worktrees that are safe to delete, use `koh prune` — it skips worktrees with uncommitted changes.
 
 ### Pruning many worktrees at once
 
@@ -140,11 +179,13 @@ In the interactive picker:
 
 ```bash
 koh new <worktree-name>      # Create a new worktree and tmux session
-koh cleanup <worktree-name>  # Close tmux session and remove worktree
+koh switch <worktree-name>   # Switch to an existing worktree's tmux window
+koh cleanup <worktree-name>  # Remove worktree (forced) and close tmux window
 koh prune                    # Bulk-remove merged or stale worktrees
-koh list                     # List all koh worktrees
+koh list                     # List all koh worktrees (interactive picker)
 koh init                     # Interactive configuration setup
 koh config                   # View current configuration
+koh version                  # Display koh version
 koh help                     # Show help message
 ```
 
@@ -152,7 +193,7 @@ koh help                     # Show help message
 
 `koh` creates a new git worktree in the `.koh/` directory and opens a tmux window with panes configured based on your `.kohconfig` file. The first pane runs your setup script, and additional panes run any commands you've configured (dev server, editor, etc.).
 
-The cleanup command finds the tmux window by name and closes it, then removes the git worktree. If you have uncommitted changes, git will warn you and you'll need to either commit them or use `git worktree remove --force` manually.
+The cleanup command force-removes the git worktree, then finds the tmux window by name and closes it. **⚠️ Uncommitted changes in the worktree are discarded without prompting** — commit, stash, or push anything you want to keep before running cleanup. For bulk cleanup that only touches worktrees that are safe to delete, use `koh prune` instead: it skips worktrees with uncommitted changes.
 
 ## Worktree Management
 
