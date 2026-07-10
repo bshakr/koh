@@ -14,6 +14,10 @@ import (
 // - Cancel the context
 // - Wait for the signal handler goroutine to exit
 //
+// On the first signal it prints "Operation cancelled by user" to stdout. Use
+// SetupSilentCancellableContext instead when a full-screen TUI owns the
+// terminal, where a stray stdout write would garble the display.
+//
 // Example usage:
 //
 //	ctx, cleanup := signals.SetupCancellableContext()
@@ -24,6 +28,22 @@ import (
 //	    return err
 //	}
 func SetupCancellableContext() (context.Context, func()) {
+	return setupCancellableContext(true)
+}
+
+// SetupSilentCancellableContext behaves exactly like SetupCancellableContext
+// but prints nothing when a signal arrives. It is meant for commands that
+// drive a bubbletea (or other full-screen) TUI: the TUI owns the terminal, so
+// the caller must report cancellation through its own rendering rather than
+// letting the signal handler write over the live screen.
+func SetupSilentCancellableContext() (context.Context, func()) {
+	return setupCancellableContext(false)
+}
+
+// setupCancellableContext holds the shared implementation. announce controls
+// whether the signal handler prints a cancellation notice; cancellation
+// semantics are identical either way.
+func setupCancellableContext(announce bool) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Setup signal channel
@@ -36,7 +56,9 @@ func SetupCancellableContext() (context.Context, func()) {
 		defer close(done)
 		select {
 		case <-sigChan:
-			fmt.Println("\nOperation cancelled by user")
+			if announce {
+				fmt.Println("\nOperation cancelled by user")
+			}
 			cancel()
 		case <-ctx.Done():
 			// Context cancelled or operation completed, exit goroutine

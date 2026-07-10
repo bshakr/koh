@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +72,11 @@ func runPrune(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("not in a git repository")
 	}
 
-	ctx, cleanupSignals := signals.SetupCancellableContext()
+	// Silent variant: prune drives a bubbletea picker below, and the default
+	// handler's "Operation cancelled by user" print would land on top of the
+	// live TUI. Cancellation is surfaced through prune's own output instead
+	// (runPruneTUI's cancelled path and executePrune's ctx.Err() check).
+	ctx, cleanupSignals := signals.SetupSilentCancellableContext()
 	defer cleanupSignals()
 
 	// Resolve via git-common-dir (not cwd) so prune works from any
@@ -410,6 +415,19 @@ func runPruneTUI(ctx context.Context, candidates []pruneCandidate, deleteBranch 
 	p := tea.NewProgram(m, tea.WithContext(ctx))
 	final, err := p.Run()
 	if err != nil {
+		// A signal is a user cancellation, not a failure — treat it exactly
+		// like pressing q so the caller prints a single "Prune cancelled"
+		// instead of a scary error (and, with it, a cobra usage dump).
+		//
+		// Two handlers race for the same SIGINT/SIGTERM: ours cancels ctx
+		// (bubbletea then returns ErrProgramKilled), while bubbletea's own
+		// handler may translate SIGINT into ErrInterrupted before our cancel
+		// lands. Cover both so the message is deterministic. We deliberately do
+		// not swallow a bare ErrProgramKilled with no cancellation: a panic
+		// wraps that too and must surface as a real error.
+		if ctx.Err() != nil || errors.Is(err, tea.ErrInterrupted) {
+			return nil, deleteBranch, true, nil
+		}
 		return nil, deleteBranch, false, err
 	}
 	fm, ok := final.(pruneModel)
