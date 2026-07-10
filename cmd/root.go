@@ -343,6 +343,7 @@ func runRoot(_ *cobra.Command, _ []string) {
 				{"switch", "Switch to existing worktree session"},
 				{"list", "List all worktrees"},
 				{"cleanup", "Remove worktree and close session"},
+				{"prune", "Remove merged or stale worktrees in bulk"},
 			},
 		},
 		{
@@ -643,7 +644,7 @@ func customUsageFunc(cmd *cobra.Command) error {
 			}
 
 			switch c.Name() {
-			case "new", "switch", "list", "cleanup":
+			case "new", "switch", "list", "cleanup", "prune":
 				worktreeCommands = append(worktreeCommands, c.Name()+"§"+c.Short)
 			case "init", "config":
 				configCommands = append(configCommands, c.Name()+"§"+c.Short)

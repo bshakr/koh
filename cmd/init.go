@@ -180,7 +180,7 @@ func (m initModel) View() string {
 			b.WriteString(styles.Muted.Render("  Panes added so far:"))
 			b.WriteString("\n")
 			for i, cmd := range m.paneCommands {
-				b.WriteString(fmt.Sprintf("    %d. %s\n", i+1, styles.Key.Render(cmd)))
+				fmt.Fprintf(&b, "    %d. %s\n", i+1, styles.Key.Render(cmd))
 			}
 			b.WriteString("\n")
 		}
