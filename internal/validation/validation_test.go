@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -173,6 +174,46 @@ func TestValidateWorktreeName(t *testing.T) {
 			shouldErr: true,
 			errMsg:    "cannot contain ':' or '|'",
 		},
+		// The following document CURRENT behavior: these inputs are accepted
+		// today. They are pinned here so any future tightening is a deliberate,
+		// visible change rather than a silent one.
+		{
+			name:      "leading dash currently allowed",
+			input:     "-feature",
+			shouldErr: false,
+		},
+		{
+			name:      "trailing dash currently allowed",
+			input:     "feature-",
+			shouldErr: false,
+		},
+		{
+			name:      "space currently allowed",
+			input:     "feature branch",
+			shouldErr: false,
+		},
+		{
+			name:      "unicode letters currently allowed",
+			input:     "café-branch",
+			shouldErr: false,
+		},
+		{
+			name:      "unicode CJK currently allowed",
+			input:     "機能-branch",
+			shouldErr: false,
+		},
+		{
+			// Length is measured in bytes: 200 two-byte runes = 400 bytes > 255.
+			name:      "unicode over byte limit",
+			input:     strings.Repeat("é", 200),
+			shouldErr: true,
+			errMsg:    "too long",
+		},
+		{
+			name:      "single dot-prefixed name allowed",
+			input:     ".hidden",
+			shouldErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -188,6 +229,59 @@ func TestValidateWorktreeName(t *testing.T) {
 				if err != nil {
 					t.Errorf("expected no error, got %v", err)
 				}
+			}
+		})
+	}
+}
+
+func TestValidatePathWithinRepository(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name      string
+		target    string
+		shouldErr bool
+	}{
+		{
+			name:      "path inside repository",
+			target:    filepath.Join(root, "worktrees", "feature"),
+			shouldErr: false,
+		},
+		{
+			name:      "repository root itself",
+			target:    root,
+			shouldErr: false,
+		},
+		{
+			name:      "parent of repository",
+			target:    filepath.Dir(root),
+			shouldErr: true,
+		},
+		{
+			name:      "sibling with shared prefix",
+			target:    root + "-sibling",
+			shouldErr: true,
+		},
+		{
+			name:      "traversal back out of repository",
+			target:    filepath.Join(root, "..", "escape"),
+			shouldErr: true,
+		},
+		{
+			name:      "unrelated absolute path",
+			target:    "/completely/unrelated/path",
+			shouldErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidatePathWithinRepository(tt.target, root)
+			if tt.shouldErr && err == nil {
+				t.Errorf("ValidatePathWithinRepository(%q, %q) = nil, want error", tt.target, root)
+			}
+			if !tt.shouldErr && err != nil {
+				t.Errorf("ValidatePathWithinRepository(%q, %q) = %v, want nil", tt.target, root, err)
 			}
 		})
 	}
