@@ -6,12 +6,15 @@ package cmd
 // real tmux server, and git config is isolated from the host machine.
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -420,5 +423,98 @@ func TestNewRefusesOutsideTmux(t *testing.T) {
 	assertDirGone(t, filepath.Join(repo, ".koh", "wt-notmux"))
 	if isRegistered(t, repo, "wt-notmux") {
 		t.Error("expected no worktree registration when the tmux precheck fails")
+	}
+}
+
+// captureOutput redirects os.Stdout and os.Stderr to pipes while fn runs and
+// returns everything written to either stream, combined. koh's single error
+// line and its usage banner both go to os.Stdout/os.Stderr directly (not to
+// cobra's configurable writers), so capturing the real files is the only way to
+// observe exactly what a user would see.
+func captureOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	origOut, origErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout, os.Stderr = wOut, wErr
+
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	var wg sync.WaitGroup
+	drain := func(r *os.File) {
+		defer wg.Done()
+		b, _ := io.ReadAll(r)
+		mu.Lock()
+		buf.Write(b)
+		mu.Unlock()
+	}
+	wg.Add(2)
+	go drain(rOut)
+	go drain(rErr)
+
+	fn()
+
+	os.Stdout, os.Stderr = origOut, origErr
+	_ = wOut.Close()
+	_ = wErr.Close()
+	wg.Wait()
+	return buf.String()
+}
+
+// runRootArgs executes the real rootCmd with args through execute(), capturing
+// everything written to stdout/stderr. It mirrors what Execute() does for a
+// user, minus the os.Exit.
+func runRootArgs(t *testing.T, args ...string) string {
+	t.Helper()
+	rootCmd.SetArgs(args)
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	return captureOutput(t, func() {
+		_ = execute(os.Stderr)
+	})
+}
+
+// TestExecuteFailurePrintsErrorOnceWithoutBanner is a regression test for the
+// double-error-plus-banner bug: a failing RunE command used to print the error,
+// then the entire ASCII usage banner, then the bare error again. It must now
+// print exactly one styled line and no banner.
+func TestExecuteFailurePrintsErrorOnceWithoutBanner(t *testing.T) {
+	repo := setupRepo(t)
+	t.Chdir(repo)
+
+	out := runRootArgs(t, "cleanup", "does-not-exist")
+
+	if strings.Contains(out, "USAGE") || strings.Contains(out, "AVAILABLE COMMANDS") {
+		t.Errorf("failure output dumped the usage banner:\n%s", out)
+	}
+	const msg = `nothing to clean up for "does-not-exist"`
+	if n := strings.Count(out, msg); n != 1 {
+		t.Errorf("error message should appear exactly once, got %d:\n%s", n, out)
+	}
+}
+
+// TestExecuteUnknownCommandStaysActionable verifies that a usage-level failure
+// (an unknown command) still reports a single actionable error — including
+// cobra's near-miss suggestion — rather than the full banner. If cobra ever
+// stops embedding suggestions in the error, this fails and we revisit adding a
+// "run koh --help" hint.
+func TestExecuteUnknownCommandStaysActionable(t *testing.T) {
+	t.Setenv("TMUX", "")
+
+	out := runRootArgs(t, "clenup") // deliberate typo of "cleanup"
+
+	if strings.Contains(out, "USAGE") || strings.Contains(out, "AVAILABLE COMMANDS") {
+		t.Errorf("unknown-command output dumped the usage banner:\n%s", out)
+	}
+	if !strings.Contains(out, `unknown command "clenup"`) {
+		t.Errorf("expected an unknown-command error, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Did you mean this?") || !strings.Contains(out, "cleanup") {
+		t.Errorf("expected a near-miss suggestion for the typo, got:\n%s", out)
 	}
 }
