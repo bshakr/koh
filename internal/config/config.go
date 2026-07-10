@@ -20,7 +20,6 @@
 package config
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,20 +52,13 @@ func ConfigPath() (string, error) {
 		return "", fmt.Errorf("not in a git repository")
 	}
 
-	// Get the main repo root (handles both main repo and worktrees)
-	var repoRoot string
-	var err error
-
-	if git.IsInWorktree() {
-		repoRoot, err = git.GetMainRepoRoot()
-		if err != nil {
-			return "", fmt.Errorf("failed to get main repository root: %w", err)
-		}
-	} else {
-		repoRoot, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("failed to get current directory: %w", err)
-		}
+	// Resolve via git-common-dir so the path is correct from the main repo
+	// root, any subdirectory of it, or inside a worktree. The previous code
+	// fell back to os.Getwd() outside a worktree, which pointed .kohconfig
+	// at whatever subdirectory the command happened to run from.
+	repoRoot, err := git.GetMainRepoRoot()
+	if err != nil {
+		return "", fmt.Errorf("failed to get main repository root: %w", err)
 	}
 
 	return filepath.Join(repoRoot, ".kohconfig"), nil
@@ -140,54 +132,6 @@ func (c *Config) Save() error {
 	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-
-	return nil
-}
-
-// Setup runs an interactive setup to create a .kohconfig file
-// Note: This is a simple fallback. Use 'koh init' for the full interactive wizard.
-func Setup() error {
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Println("Koh Configuration Setup")
-	fmt.Println("=======================")
-	fmt.Println()
-
-	config := DefaultConfig()
-
-	// Ask for setup script
-	fmt.Printf("Setup script (default: %s): ", config.SetupScript)
-	setupScript, _ := reader.ReadString('\n')
-	setupScript = strings.TrimSpace(setupScript)
-	if setupScript != "" {
-		config.SetupScript = setupScript
-	}
-
-	// Ask for pane commands
-	fmt.Println()
-	fmt.Println("Pane commands (one per line, empty line to finish):")
-	var paneCommands []string
-	for {
-		fmt.Print("> ")
-		cmd, _ := reader.ReadString('\n')
-		cmd = strings.TrimSpace(cmd)
-		if cmd == "" {
-			break
-		}
-		paneCommands = append(paneCommands, cmd)
-	}
-	if len(paneCommands) > 0 {
-		config.PaneCommands = paneCommands
-	}
-
-	// Save the configuration
-	if err := config.Save(); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
-
-	configPath, _ := ConfigPath()
-	fmt.Println()
-	fmt.Printf("Configuration saved to: %s\n", configPath)
 
 	return nil
 }

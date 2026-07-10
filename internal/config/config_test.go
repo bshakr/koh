@@ -151,6 +151,74 @@ func TestConfigPathInGitRepo(t *testing.T) {
 	}
 }
 
+// gitInRepo runs a git command in dir with identity supplied via env, so
+// commits work without touching the host's git config.
+func gitInRepo(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_AUTHOR_NAME=koh-test", "GIT_AUTHOR_EMAIL=koh@test",
+		"GIT_COMMITTER_NAME=koh-test", "GIT_COMMITTER_EMAIL=koh@test",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// assertConfigDir checks that ConfigPath resolves .kohconfig into wantDir.
+// The parent directory is compared symlink-resolved because git may hand back
+// either form on macOS, where temp dirs live behind a /var symlink.
+func assertConfigDir(t *testing.T, wantDir string) {
+	t.Helper()
+	got, err := ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath() error: %v", err)
+	}
+	if filepath.Base(got) != ".kohconfig" {
+		t.Fatalf("ConfigPath() = %q, want a .kohconfig path", got)
+	}
+	gotDir, err := filepath.EvalSymlinks(filepath.Dir(got))
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", filepath.Dir(got), err)
+	}
+	want, err := filepath.EvalSymlinks(wantDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", wantDir, err)
+	}
+	if gotDir != want {
+		t.Errorf("ConfigPath() resolved into %q, want %q", gotDir, want)
+	}
+}
+
+// TestConfigPathFromSubdirectory guards the regression where ConfigPath fell
+// back to os.Getwd() outside a worktree, pointing .kohconfig at whatever
+// subdirectory the command happened to run from.
+func TestConfigPathFromSubdirectory(t *testing.T) {
+	root := newGitRepo(t)
+	sub := filepath.Join(root, "deep", "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+
+	assertConfigDir(t, root)
+}
+
+// TestConfigPathFromWorktree verifies the config still resolves to the MAIN
+// repo root when running inside a linked worktree — koh stores one config per
+// repo, not per worktree.
+func TestConfigPathFromWorktree(t *testing.T) {
+	root := newGitRepo(t)
+	gitInRepo(t, root, "commit", "--allow-empty", "-m", "init")
+	wt := filepath.Join(root, ".koh", "feature")
+	gitInRepo(t, root, "worktree", "add", wt, "-b", "feature")
+	t.Chdir(wt)
+
+	assertConfigDir(t, root)
+}
+
 func TestConfigPathNotInGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
