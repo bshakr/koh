@@ -110,6 +110,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	// A bare JSON `null` unmarshals without error but leaves a zero-value
+	// config, which would silently mask a corrupt or empty config file.
+	// Treat it as a parse error so the problem surfaces clearly.
+	if strings.TrimSpace(string(data)) == "null" {
+		return nil, fmt.Errorf("failed to parse config file: config is null")
+	}
+
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
