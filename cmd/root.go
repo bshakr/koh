@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -103,42 +102,24 @@ func runRoot(_ *cobra.Command, _ []string) {
 		return
 	}
 
-	// Get repository info
-	repoName, _ := git.GetRepoName()
+	// Resolve the main repo root via git-common-dir (not cwd) so the dashboard
+	// is correct from any subdirectory of the main repo, not just its root.
+	mainRepoRoot := resolveMainRepoRoot()
 
-	// Get worktree count and current worktree
-	worktreeCount := 0
-	currentWorktree := ""
-
-	var mainRepoRoot string
-	var currentWorktreePath string
-
-	if git.IsInWorktree() {
-		mainRepoRoot, _ = git.GetMainRepoRoot()
-		currentWorktreePath, _ = git.GetCurrentWorktreePath()
-		currentWorktree = filepath.Base(currentWorktreePath)
-	} else {
-		mainRepoRoot, _ = os.Getwd()
-		currentWorktree = "main"
+	// Name the repo from the resolved root so it stays the actual repository
+	// name even inside a worktree, where --show-toplevel (GetRepoName) would
+	// report the worktree directory instead.
+	repoName := filepath.Base(mainRepoRoot)
+	if mainRepoRoot == "" {
+		repoName, _ = git.GetRepoName()
 	}
 
-	// Count worktrees
-	if mainRepoRoot != "" {
-		kohDir := filepath.Join(mainRepoRoot, ".koh")
-		if _, err := os.Stat(kohDir); err == nil {
-			ctx := context.Background()
-			gitCmd := exec.CommandContext(ctx, "git", "worktree", "list")
-			output, err := gitCmd.Output()
-			if err == nil {
-				lines := strings.Split(string(output), "\n")
-				for _, line := range lines {
-					if strings.Contains(line, "/.koh/") {
-						worktreeCount++
-					}
-				}
-			}
-		}
-	}
+	currentWorktree := currentWorktreeLabel(mainRepoRoot)
+
+	// Count koh worktrees through the same predicate list and prune use, so the
+	// dashboard total agrees with `koh list` and `koh prune` and works from any
+	// subdirectory.
+	worktreeCount := countKohWorktrees(context.Background(), mainRepoRoot)
 
 	// Check config status
 	configExists, _ := config.ConfigExists()
@@ -484,6 +465,51 @@ func runRoot(_ *cobra.Command, _ []string) {
 		Render(strings.Repeat("─", 60))
 	fmt.Println(bottomBorder)
 	fmt.Println()
+}
+
+// resolveMainRepoRoot returns the absolute path to the main repository root,
+// resolved via git-common-dir so it is correct from any subdirectory or from
+// inside a worktree. git may report that path relative to the cwd, so it is
+// absolutized before being returned. An empty string means the root could not
+// be determined (e.g. not in a git repository).
+func resolveMainRepoRoot() string {
+	root, err := git.GetMainRepoRoot()
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return root
+	}
+	return abs
+}
+
+// currentWorktreeLabel returns the name shown in the dashboard's "Current"
+// field: the active worktree's directory name, or "main" when run from the
+// primary checkout (including any subdirectory of it). It compares the current
+// toplevel against mainRepoRoot instead of using IsInWorktree(), which can
+// misreport a subdirectory of the main repo as a worktree when git returns
+// git-dir absolute but git-common-dir relative.
+func currentWorktreeLabel(mainRepoRoot string) string {
+	top, err := git.GetCurrentWorktreePath()
+	if err != nil || samePath(top, mainRepoRoot) {
+		return "main"
+	}
+	return filepath.Base(top)
+}
+
+// countKohWorktrees returns how many koh-managed worktrees are registered for
+// the repo rooted at mainRepoRoot. It shares filterKohWorktrees with list and
+// prune so the dashboard total matches what those commands show, and it lists
+// worktrees through git rather than the cwd so it stays correct from any
+// subdirectory. Any error yields 0 so the dashboard still renders.
+func countKohWorktrees(ctx context.Context, mainRepoRoot string) int {
+	worktrees, err := git.ListWorktreesPorcelain(ctx)
+	if err != nil {
+		return 0
+	}
+	kohDir := filepath.Join(mainRepoRoot, ".koh")
+	return len(filterKohWorktrees(worktrees, kohDir))
 }
 
 // Execute runs the root command and exits non-zero on failure.
