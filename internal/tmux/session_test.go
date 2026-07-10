@@ -2,11 +2,66 @@ package tmux
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bshakr/koh/internal/config"
 )
+
+// TestMain points TMUX at a throwaway tmux server on a private socket so the
+// live-server tests in this package can never touch the developer's real tmux
+// session — they create and kill real windows, and previously left stray
+// "test-repo|test-*" windows in whatever session `go test` ran from. When tmux
+// isn't installed (or the private server fails to start), TMUX is left empty
+// and those tests skip via their IsInTmux() guards, exactly as before.
+func TestMain(m *testing.M) {
+	os.Exit(runWithPrivateTmux(m))
+}
+
+func runWithPrivateTmux(m *testing.M) int {
+	// Whatever happens below, never inherit the user's server.
+	if err := os.Unsetenv("TMUX"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to unset TMUX: %v\n", err)
+		return 1
+	}
+
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return m.Run()
+	}
+
+	ctx := context.Background()
+	socket := fmt.Sprintf("koh-test-%d", os.Getpid())
+	// -f /dev/null keeps the user's tmux.conf out of the test server.
+	start := exec.CommandContext(ctx, tmuxBin, "-L", socket, "-f", os.DevNull,
+		"new-session", "-d", "-s", "koh-test", "-x", "200", "-y", "50")
+	if out, err := start.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: private tmux server failed to start, live-server tests will skip: %v\n%s", err, out)
+		return m.Run()
+	}
+	defer func() {
+		_ = exec.CommandContext(ctx, tmuxBin, "-L", socket, "kill-server").Run()
+	}()
+
+	sockPath, err := exec.CommandContext(ctx, tmuxBin, "-L", socket,
+		"display-message", "-p", "#{socket_path}").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve private tmux socket, live-server tests will skip: %v\n", err)
+		return m.Run()
+	}
+
+	// TMUX is "socket_path,server_pid,session_id"; tmux clients only read the
+	// socket path from it, so placeholder pid/session values are fine.
+	if err := os.Setenv("TMUX", strings.TrimSpace(string(sockPath))+",0,0"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set TMUX: %v\n", err)
+		return 1
+	}
+	return m.Run()
+}
 
 func TestIsInTmux(t *testing.T) {
 	// This test just verifies the function runs without error
