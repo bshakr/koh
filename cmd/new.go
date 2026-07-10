@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,15 @@ func runNew(_ *cobra.Command, args []string) error {
 	// Check if we're in a git repository
 	if !git.IsGitRepo() {
 		return fmt.Errorf("not in a git repository\nPlease run this command from within a git repository")
+	}
+
+	// Check if we're in a tmux session before creating anything on disk. The
+	// worktree is created further down and the tmux session after it, so
+	// without this precheck a run outside tmux would create and register the
+	// worktree and only then fail — leaving a half-created worktree that makes
+	// re-running report "already exists".
+	if !tmux.IsInTmux() {
+		return fmt.Errorf("not in a tmux session\nPlease run this command from within a tmux session")
 	}
 
 	// Check if config exists, if not prompt user to run init
@@ -106,9 +116,30 @@ func runNew(_ *cobra.Command, args []string) error {
 
 	// Create tmux session with config and context
 	if err := tmux.CreateSessionWithContext(ctx, repoName, worktreeName, worktreePath, cfg); err != nil {
+		// The worktree was created moments ago; roll it back so a failed setup
+		// doesn't leave a registered, half-created worktree behind (defense in
+		// depth — the tmux precheck above covers the common cause).
+		rollbackNewWorktree(worktreeName, worktreePath)
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
 	fmt.Println("Worktree setup complete!")
 	return nil
+}
+
+// rollbackNewWorktree removes a worktree that runNew just created, used when a
+// later step fails and would otherwise leave a half-created, already-registered
+// worktree behind.
+func rollbackNewWorktree(worktreeName, worktreePath string) {
+	// Use a background context: the caller's context may already be cancelled
+	// (e.g. Ctrl+C during setup), and the rollback must still run to completion.
+	if err := git.RemoveWorktreeWithContext(context.Background(), worktreePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to deregister worktree during rollback: %v\n", err)
+	}
+	// git worktree remove can leave the directory behind on partial failure, so
+	// make sure the path is gone for a clean retry of koh new.
+	if err := forceRemoveAll(worktreePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree directory during rollback: %v\n", err)
+	}
+	fmt.Printf("Rolled back worktree .koh/%s\n", worktreeName)
 }
