@@ -18,6 +18,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,11 @@ var rootCmd = &cobra.Command{
 
 A tool for managing git worktrees with automatic tmux session setup.
 Creates isolated development environments with pre-configured panes.`,
-	Run: runRoot,
+	// Execute prints the single error line itself, so cobra must not also
+	// print "Error: ..." or dump the full usage banner on RunE failures.
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Run:           runRoot,
 }
 
 func runRoot(_ *cobra.Command, _ []string) {
@@ -481,12 +486,24 @@ func runRoot(_ *cobra.Command, _ []string) {
 	fmt.Println()
 }
 
-// Execute runs the root command and handles any errors.
+// Execute runs the root command and exits non-zero on failure.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if execute(os.Stderr) != nil {
 		os.Exit(1)
 	}
+}
+
+// execute runs the root command, writing a single styled error line to errOut
+// when it fails. cobra is configured to stay silent on errors (see rootCmd's
+// SilenceErrors/SilenceUsage), so this is the only place an error is printed —
+// no duplicate "Error:" line and no usage banner. Split out from Execute so
+// tests can capture the error output without os.Exit ending the process.
+func execute(errOut io.Writer) error {
+	err := rootCmd.Execute()
+	if err != nil {
+		fprintln(errOut, styles.RenderError(err.Error()))
+	}
+	return err
 }
 
 func init() {
